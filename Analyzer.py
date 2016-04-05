@@ -83,7 +83,7 @@ def get_k_means_from_picture(pic):
 
     # Fitting model on a small sub-sample of the data
     palette_array_sample = shuffle(palette_array, random_state=0)[:1000]
-    k_means = KMeans(n_clusters=1000, random_state=0).fit(palette_array_sample)
+    k_means = KMeans(n_clusters=20, random_state=0).fit(palette_array_sample)
 
     codebook = k_means.cluster_centers_
 
