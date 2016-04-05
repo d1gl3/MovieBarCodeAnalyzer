@@ -1,4 +1,5 @@
 import io
+import json
 import urllib
 import operator
 
@@ -20,7 +21,7 @@ print(client.info())
 movies = {}
 
 def get_movie_barcodes():
-    moviebarcode_posts = client.posts('moviebarcode', limit=3)['posts']
+    moviebarcode_posts = client.posts('moviebarcode', limit=1)['posts']
 
     for movie in moviebarcode_posts:
         title = movie['summary']
@@ -31,53 +32,58 @@ def get_movie_barcodes():
             "title": title
         }
 
-    movies['BluesBrothers'] = {
-        "barcode_url": "image4.jpg",
-        "title": "BluesBrothers"
-    }
+def get_picture_array_from_file(file):
+    picture_array = scipy.misc.imread(file, flatten=0)
+    picture_array = np.array(picture_array, dtype=np.float64) / 255
+    return picture_array
 
-    movies['PusteBlume'] = {
-        "barcode_url": "image3.jpg",
-        "title": "PusteBlume"
-    }
+def get_picture_stream_from_url(url):
+    picture_stream = urllib.urlopen(url)
+    picture_stream = io.BytesIO(picture_stream.read())
+    return picture_stream
 
-def analyze_movie(movie, k_means, codebook):
-    if movie['title'] in ("BluesBrothers", "PusteBlume"):
-        barcode_file = movie['barcode_url']
-    else:
-        barcode_req = urllib.urlopen(movie['barcode_url'])
+def transform_to_2D_numpy_array(picture_array):
+    w, h, d = tuple(picture_array.shape)
+    assert d == 3
+    array_2D = np.reshape(picture_array, (w * h, d))
+    return array_2D, w, h, d
 
-        barcode_file = io.BytesIO(barcode_req.read())
+def analyze_movie(movie, k_means, codebook_palette):
 
-    barcode = scipy.misc.imread(barcode_file, flatten=0)
-    barcode = np.array(barcode, dtype=np.float64) / 255
+    barcode_file = get_picture_stream_from_url(movie['barcode_url'])
+    barcode = get_picture_array_from_file(barcode_file)
 
     # Load Image and transform to a 2D numpy array.
-    w, h, d = tuple(barcode.shape)
-    assert d == 3
-    barcode_array = np.reshape(barcode, (w * h, d))
+    barcode_array, w, h, d = transform_to_2D_numpy_array(barcode)
 
-    colors = k_means.predict(barcode_array)
 
-    count = np.bincount(colors)
+    colors_palette = k_means.predict(barcode_array)
+
+    count = np.bincount(colors_palette)
     ii = np.nonzero(count)
-    movies[movie['title']]['colors'] = zip(codebook, count[ii])
-    movies[movie['title']]['labels'] = colors
-    movies[movie['title']]['whd'] = (w,h,d)
+    movies[movie['title']]['colors_palette'] = zip(codebook_palette, count[ii])
+    movies[movie['title']]['labels_palette'] = colors_palette
+    movies[movie['title']]['whd'] = (w, h, d)
+    movies[movie['title']]['codebook_palette'] = codebook_palette
+
+    k_means, codebook = get_k_means_from_picture(barcode)
+
+    colors_movie = k_means.predict(barcode_array)
+
+    count = np.bincount(colors_movie)
+    ii = np.nonzero(count)
+    movies[movie['title']]['colors_movie'] = zip(codebook, count[ii])
+    movies[movie['title']]['labels_movie'] = colors_movie
+    movies[movie['title']]['codebook_movie'] = codebook
 
     return movie
 
-
-def get_k_means_from_128_palette():
-    palette = scipy.misc.imread('palette.jpg', flatten=0)
-    palette = np.array(palette, dtype=np.float64) / 255
-    w, h, d = tuple(palette.shape)
-    assert d == 3
-    palette_array = np.reshape(palette, (w * h, d))
+def get_k_means_from_picture(pic):
+    palette_array, w, h, d = transform_to_2D_numpy_array(pic)
 
     # Fitting model on a small sub-sample of the data
     palette_array_sample = shuffle(palette_array, random_state=0)[:1000]
-    k_means = KMeans(n_clusters=128, random_state=0).fit(palette_array_sample)
+    k_means = KMeans(n_clusters=1000, random_state=0).fit(palette_array_sample)
 
     codebook = k_means.cluster_centers_
 
@@ -93,41 +99,90 @@ def recreate_image(codebook, labels, w, h, img_id=None):
             image[i][j] = codebook[labels[label_idx]]
             label_idx += 1
 
-    y = np.bincount(labels)
-    ii = np.nonzero(y)
-    print zip(codebook, y[ii])
-
     return image
 
 if __name__ == '__main__':
     get_movie_barcodes()
-    k_means, codebook = get_k_means_from_128_palette()
 
-    analyzed_movies = {k: analyze_movie(v, k_means, codebook) for (k, v) in movies.iteritems()}
+    palette_pic = get_picture_array_from_file('palette.jpg')
+    k_means, codebook_palette = get_k_means_from_picture(palette_pic)
+
+    analyzed_movies = {k: analyze_movie(v, k_means, codebook_palette) for (k, v) in movies.iteritems()}
 
     for k, movie in analyzed_movies.iteritems():
-        movie_colors = movie['colors'].sort(key=operator.itemgetter(1))
-        color, count = zip(*movie['colors'])
+        codebook = movie['codebook_movie']
+        codebook_palette = movie['codebook_palette']
+        movie_colors = movie['colors_movie'].sort(key=operator.itemgetter(1))
+        movie_colors_palette = movie['colors_palette'].sort(key=operator.itemgetter(1))
+        color, count = zip(*movie['colors_palette'])
+        color_movie, count_movie = zip(*movie['colors_movie'])
         N = len(color)
 
         ind = np.arange(N)  # the x locations for the groups
         width = 0.35  # the width of the bars
 
+        N_movie = len(color_movie)
+
+        ind_movie = np.arange(N_movie)
+
         fig = plt.figure()
-        ax1 = fig.add_subplot(211)
+        ax1 = fig.add_subplot(324)
         ax1.set_yscale('log')
+        plt.title('Color distribution palette colors (40 colors, K-Means)')
         rects1 = ax1.bar(ind, count, width)
         for i in range(len(color)):
             color_tuple = np.ceil(tuple(color[i]*255))
             hex_color = '#%02x%02x%02x' % tuple(color_tuple)
             rects1[i].set_color(hex_color)
 
-        ax2 = fig.add_subplot(212)
+        ax2 = fig.add_subplot(323)
         plt.axis('off')
-        plt.title('Quantized image (256 colors, K-Means)')
+        plt.title('Quantized image palette (40 colors, K-Means)')
         w, h, d = tuple(movie['whd'])
-        plt.imshow(recreate_image(k_means.cluster_centers_, movie['labels'], w, h, 1))
+        plt.imshow(recreate_image(codebook_palette, movie['labels_palette'], w, h, 1))
 
-        plt.show()
 
-    print ""
+        barcode_file = get_picture_stream_from_url(movie['barcode_url'])
+        barcode_pic = get_picture_array_from_file(barcode_file)
+        ax3 = fig.add_subplot(321)
+        plt.axis('off')
+        plt.title('Original image (40 colors, K-Means)')
+        w, h, d = tuple(movie['whd'])
+        plt.imshow(barcode_pic)
+
+        ax4 = fig.add_subplot(326)
+        ax4.set_yscale('log')
+        plt.title('Color distribution movie colors (40 colors, K-Means)')
+        rects2 = ax4.bar(ind_movie, count_movie, width)
+        for i in range(len(color_movie)):
+            color_tuple = np.ceil(tuple(color_movie[i] * 255))
+            hex_color = '#%02x%02x%02x' % tuple(color_tuple)
+            rects2[i].set_color(hex_color)
+
+        ax5 = fig.add_subplot(325)
+        plt.axis('off')
+        plt.title('Quantized image movie colors (40 colors, K-Means)')
+        w, h, d = tuple(movie['whd'])
+        plt.imshow(recreate_image(codebook, movie['labels_movie'], w, h, 1))
+
+    plt.show()
+
+
+
+"""
+    for k, movie in analyzed_movies.iteritems():
+        colors, count = zip(*movie['colors'])
+        del analyzed_movies[k]['colors']
+        del analyzed_movies[k]['labels']
+        converted_colors = {}
+        for i in range(len(colors)):
+            color_tuple = np.ceil(tuple(colors[i] * 255))
+            hex_color = '#%02x%02x%02x' % tuple(color_tuple)
+            converted_colors[hex_color] = count[i]
+
+        analyzed_movies[k]['colors'] = converted_colors
+
+#    with open("result.json", "w") as f:
+#        f.write(json.dumps(analyzed_movies))
+#        f.close()
+"""
